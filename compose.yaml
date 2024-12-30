@@ -1,0 +1,33 @@
+services:
+  bar-exam-prep:
+    restart: unless-stopped
+    container_name: quizzapp
+    image: bar-exam-prep:latest
+    ports:
+      - 8032:5000
+    networks:
+      - lawnet
+    environment:
+      - VOICE_MODEL=en-us-amy-low.onnx
+  serve-piper-tts:
+    image: ghcr.io/arunk140/serve-piper-tts:latest
+    privileged: true
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities:
+                - gpu
+    container_name: ttsx
+    ports:
+      - 8042:8080
+    restart: unless-stopped
+    networks:
+      - lawnet
+    environment: []
+    volumes:
+      - ./tts/models:/go/src/app/models
+networks:
+  lawnet:
