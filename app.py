@@ -1,32 +1,45 @@
-import gradio as gr
+from flask import Flask, request, jsonify, render_template, send_file
+import requests
 import sqlite3
 import random
+import io
+import os
+
+app = Flask(__name__)
 
 # Database file
 db_file = "data.db"
+
+# Mapping sheet names to display names
+sheet_name_mapping = {
+    "CivPro": "Civil Procedure",
+    "ConLaw": "Constitutional Law",
+    "Contracts": "Contracts",
+    "CrimLaw-Pro": "Criminal Law & Procedure",
+    "Evidence": "Evidence",
+    "RealProperty": "Real Property",
+    "Torts": "Torts"
+}
 
 # Function to fetch a random question from the database
 def get_random_question():
     conn = sqlite3.connect(db_file)
     cursor = conn.cursor()
-    
+
     cursor.execute("SELECT id FROM quiz_table")
     question_ids = [row[0] for row in cursor.fetchall()]
-    
+
     question_id = random.choice(question_ids)
-    
+
     cursor.execute("""
         SELECT id, question, choice1, choice2, choice3, choice4, correct_choice, correct_answer, sheet_name
         FROM quiz_table
         WHERE id = ?
     """, (question_id,))
     question_data = cursor.fetchone()
-    
+
     conn.close()
-    
-    # Debug: Print the fetched question data
-    print(f"Fetched question data: {question_data}")
-    
+
     return {
         "id": question_data[0],
         "question": question_data[1],
@@ -38,88 +51,93 @@ def get_random_question():
         ],
         "correct_choice": question_data[6],
         "correct_answer": question_data[7],
-        "sheet_name": question_data[8]
+        "sheet_name": sheet_name_mapping.get(question_data[8], question_data[8])
     }
 
-# Function to handle quiz interaction
-def check_answer(user_choice, question_id):
+@app.route('/')
+def index():
+    return render_template('index.html')
+
+@app.route('/get_question', methods=['GET'])
+def get_question():
+    question_data = get_random_question()
+    return jsonify(question_data)
+
+@app.route('/check_answer', methods=['POST'])
+def check_answer():
+    data = request.json
+    question_id = data['question_id']
+    user_choice = data['user_choice']
+
     conn = sqlite3.connect(db_file)
     cursor = conn.cursor()
-    
+
     cursor.execute("""
-        SELECT correct_choice, correct_answer, sheet_name
+        SELECT question, correct_choice, correct_answer, sheet_name
         FROM quiz_table
         WHERE id = ?
     """, (question_id,))
     result = cursor.fetchone()
-    correct_choice, correct_answer, sheet_name = result
-    
+    question_text, correct_choice, correct_answer, sheet_name = result
+
     conn.close()
-    
-    # Extract the letter part of the user choice
-    user_choice_letter = user_choice.split('.')[0].strip()
-    
-    # Strip whitespace from correct choice and correct answer
-    correct_choice = correct_choice.strip()
-    correct_answer = correct_answer.strip()
-    
-    # Debug: Print the correct choice, correct answer, and user choice
-    print(f"Comparing user choice and correct choice")
-    print(f"User choice letter: '{user_choice_letter}'")
-    print(f"Correct choice: '{correct_choice}'")
-    print(f"Correct answer: '{correct_answer}'")
-    
-    # Compare user choice letter to correct choice
-    if user_choice_letter == correct_choice:
-        feedback = "Correct!"
+
+    correct = user_choice == correct_choice.strip()
+    response = {
+        "correct": correct,
+        "correct_choice": correct_choice.strip(),
+        "correct_answer": correct_answer.strip(),
+        "sheet_name": sheet_name_mapping.get(sheet_name, sheet_name)
+    }
+
+    if not correct:
+        # Call Ollama server to explain why the answer was incorrect
+        explanation = get_explanation(question_text, user_choice)
+        response["explanation"] = explanation
+
+    return jsonify(response)
+
+def get_explanation(question_text, user_choice):
+    # Call Ollama server to get explanation
+    url = "https://ai.mythicheroes.space/api/generate"
+    prompt = f"Explain why the answer '{user_choice}' is incorrect for the question: '{question_text}'."
+    payload = {
+        "model": "ALIENTELLIGENCE/attorney2",
+        "prompt": prompt,
+        "stream": False
+    }
+    headers = {'Content-Type': 'application/json'}
+    response = requests.post(url, json=payload, headers=headers)
+    return response.json().get("response", "No explanation available.")
+
+# Add the Piper and Whisper routes here
+@app.route('/speak', methods=['POST'])
+def speak():
+    data = request.json
+    text = data['text']
+    voice = os.getenv('VOICE_MODEL', 'en_US-lessac-medium.onnx')  # Use environmental variable for voice model
+    url = "http://192.168.5.151:8042/api/tts"  # Piper TTS server URL
+
+    payload = {
+        "text": text,
+        "voice": voice
+    }
+    headers = {'Content-Type': 'application/json'}
+    response = requests.post(url, json=payload, headers=headers)
+
+    if response.status_code == 200:
+        audio_data = io.BytesIO(response.content)
+        return send_file(audio_data, mimetype='audio/wav')
     else:
-        feedback = f"Incorrect. The correct answer was: {correct_choice} - {correct_answer}."
-    
-    if sheet_name:
-        feedback += f"\nCategory: {sheet_name}"
-    
-    return feedback
+        return jsonify({"error": "Failed to generate speech"}), response.status_code
 
-# Function to load the next question
-def next_question():
-    question_data = get_random_question()
-    choices = [f"{label}. {text}" for label, text in question_data["choices"]]
-    return (
-        question_data["question"],
-        gr.update(choices=choices),
-        question_data["id"]
-    )
+@app.route('/transcribe', methods=['POST'])
+def transcribe():
+    audio_file = request.files['audio']
+    url = "https://sttx.mythicheroes.space/transcribe"
+    files = {'audio': audio_file}
+    response = requests.post(url, files=files)
+    return jsonify(response.json())
 
-# Gradio Interface
-with gr.Blocks(title="Bar Exam Prep") as quiz_app:
-    question_id_state = gr.State()
-
-    with gr.Row():
-        question_display = gr.Textbox(label="Question", interactive=False)
-    with gr.Row():
-        choices_radio = gr.Radio(label="Choices", choices=[], interactive=True)
-    with gr.Row():
-        feedback_display = gr.Textbox(label="Answer", interactive=False)
-    with gr.Row():
-        submit_button = gr.Button("Submit")
-        next_button = gr.Button("Next Question")
-    
-    submit_button.click(
-        fn=check_answer,
-        inputs=[choices_radio, question_id_state],
-        outputs=feedback_display
-    )
-    
-    next_button.click(
-        fn=next_question,
-        inputs=[],
-        outputs=[question_display, choices_radio, question_id_state]
-    )
-    
-    quiz_app.load(
-        fn=next_question,
-        inputs=[],
-        outputs=[question_display, choices_radio, question_id_state]
-    )
-
-quiz_app.launch()
+if __name__ == '__main__':
+    app.run(host='0.0.0.0', port=5000)

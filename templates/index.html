@@ -1,0 +1,128 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Bar Exam Prep</title>
+    <link rel="icon" href="{{ url_for('static', filename='law.ico') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
+    <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
+</head>
+<body>
+    <h1>Bar Exam Prep</h1>
+    <img src="{{ url_for('static', filename='law.ico') }}" alt="Logo">
+    <div id="counter"></div>
+    <div id="question-container">
+        <p id="question"></p>
+        <div id="choices"></div>
+    </div>
+    <div id="correct-answer-container" style="display: none;">
+        <p id="correct-answer"></p>
+        <p id="correct-explanation"></p>
+        <p id="correct-category"></p>
+    </div>
+    <div id="button-container">
+        <button id="submit-button">Submit</button>
+        <button id="read-aloud-button">Read Aloud</button>
+        <button id="stop-button">Stop</button>
+        <button id="next-question-button">Next Question</button>
+    </div>
+    <p id="loading-indicator">Submitting your answer...</p>
+
+    <script>
+        let correctCount = 0;
+        let incorrectCount = 0;
+        let questionCount = 0;
+        let audio = null;
+
+        function loadQuestion() {
+            $.get('/get_question', function(data) {
+                $('#question').text(data.question);
+                $('#question').data('id', data.id);  // Set the question ID
+                $('#choices').empty();
+                data.choices.forEach(function(choice) {
+                    $('#choices').append('<input type="radio" name="choice" value="' + choice[0] + '"> ' + choice[0] + '. ' + choice[1] + '<br>');
+                });
+                $('#submit-button').prop('disabled', false);  // Enable the submit button
+                $('#correct-answer-container').hide();
+                $('#loading-indicator').hide();
+            });
+        }
+
+        $('#submit-button').click(function() {
+            var user_choice = $('input[name="choice"]:checked').val();
+            var question_id = $('#question').data('id');  // Get the question ID
+            $('#loading-indicator').show();  // Show loading indicator
+            $.ajax({
+                url: '/check_answer',
+                type: 'POST',
+                contentType: 'application/json',
+                data: JSON.stringify({ question_id: question_id, user_choice: user_choice }),
+                success: function(data) {
+                    $('#loading-indicator').hide();  // Hide loading indicator
+                    if (data.correct) {
+                        correctCount++;
+                    } else {
+                        incorrectCount++;
+                    }
+                    questionCount++;
+                    $('#counter').text('Questions Done: ' + questionCount + ' | Correct: ' + correctCount + ' | Incorrect: ' + incorrectCount);
+                    $('#submit-button').prop('disabled', true);  // Disable the submit button
+
+                    // Display the correct answer, explanation, and category in the correct answer box
+                    $('#correct-answer').text('Correct Answer: ' + data.correct_choice + ' - ' + data.correct_answer);
+                    $('#correct-explanation').text('Explanation: ' + data.explanation);
+                    $('#correct-category').text('Category: ' + data.sheet_name);
+                    $('#correct-answer-container').show();
+
+                    // Read aloud the correct answer and explanation if incorrect
+                    var ttsText = 'The correct answer is ' + data.correct_choice + ' - ' + data.correct_answer;
+                    if (!data.correct) {
+                        ttsText += '. Explanation: ' + data.explanation;
+                    }
+                    readAloud(ttsText);
+                }
+            });
+        });
+
+        $('#read-aloud-button').click(function() {
+            var text = $('#question').text() + ' Here are the choices: ' + $('#choices').text();
+            readAloud(text);
+        });
+
+        $('#stop-button').click(function() {
+            if (audio) {
+                audio.pause();
+                audio.currentTime = 0;
+            }
+        });
+
+        $('#next-question-button').click(function() {
+            loadQuestion();
+        });
+
+        function readAloud(text) {
+            $.ajax({
+                url: '/speak',
+                type: 'POST',
+                contentType: 'application/json',
+                data: JSON.stringify({ text: text }),
+                xhrFields: {
+                    responseType: 'blob'
+                },
+                success: function(data) {
+                    if (audio) {
+                        audio.pause();
+                        audio.currentTime = 0;
+                    }
+                    audio = new Audio(URL.createObjectURL(data));
+                    audio.play();
+                }
+            });
+        }
+
+        $(document).ready(function() {
+            loadQuestion();
+        });
+    </script>
+</body>
+</html>
